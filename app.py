@@ -8,6 +8,28 @@ import fitz  # PyMuPDF
 from google import genai
 from google.genai import types
 
+def embed_texts(client, texts, batch_size=32):
+    # 1. Remove empty or whitespace-only strings
+    clean_texts = [t.strip() for t in texts if t and t.strip()]
+    if not clean_texts:
+        return np.array([])
+
+    all_embeddings = []
+
+    # 2. Process in manageable sub-batches
+    for i in range(0, len(clean_texts), batch_size):
+        batch = clean_texts[i : i + batch_size]
+
+        response = client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=batch,
+        )
+
+        # Extract embeddings from response
+        embeddings = [e.values for e in response.embeddings]
+        all_embeddings.extend(embeddings)
+
+    return np.array(all_embeddings)
 
 # -----------------------------
 # Configuration
