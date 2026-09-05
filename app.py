@@ -53,7 +53,7 @@ def process_pdf_bytes(file_bytes, file_name, key):
 
         # 3. Create Vector Store passing explicit API Key
         embeddings = GoogleGenerativeAIEmbeddings(
-            model="text-embedding-004",
+            model="text-embedding-001",
             google_api_key=key
         )
         vectorstore = FAISS.from_documents(chunks, embeddings)
