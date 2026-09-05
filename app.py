@@ -5,15 +5,16 @@ from typing import List, Dict, Any
 import numpy as np
 import streamlit as st
 import fitz  # PyMuPDF
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 
 # -----------------------------
 # Configuration
 # -----------------------------
 APP_TITLE = "GuidelineGPT — Evidence-Based Clinical Q&A"
-CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.6-sol")
-EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "text-embedding-004")
 
 # Approximate character-based chunking. Keeping chunks page-aware makes
 # source/page citations much easier to verify.
@@ -54,18 +55,18 @@ st.markdown(
 # Secrets / client
 # -----------------------------
 def get_api_key() -> str:
-    """Read the OpenAI key from Streamlit secrets or environment."""
+    """Read the Gemini key from Streamlit secrets or environment."""
     try:
-        key = st.secrets.get("OPENAI_API_KEY", "")
+        key = st.secrets.get("GEMINI_API_KEY", "") or st.secrets.get("GOOGLE_API_KEY", "")
     except Exception:
         key = ""
 
-    return key or os.getenv("OPENAI_API_KEY", "")
+    return key or os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
 
 
 @st.cache_resource(show_spinner=False)
-def get_openai_client(api_key: str) -> OpenAI:
-    return OpenAI(api_key=api_key)
+def get_gemini_client(api_key: str) -> genai.Client:
+    return genai.Client(api_key=api_key)
 
 
 # -----------------------------
@@ -157,18 +158,17 @@ def build_chunks(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # -----------------------------
 # Embeddings / retrieval
 # -----------------------------
-def embed_texts(client: OpenAI, texts: List[str]) -> np.ndarray:
+def embed_texts(client: genai.Client, texts: List[str]) -> np.ndarray:
     vectors = []
 
     for start in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[start : start + EMBED_BATCH_SIZE]
-        response = client.embeddings.create(
+        response = client.models.embed_content(
             model=EMBED_MODEL,
-            input=batch,
+            contents=batch,
         )
-        # The API returns the original input order via the index field.
-        ordered = sorted(response.data, key=lambda x: x.index)
-        vectors.extend([item.embedding for item in ordered])
+        for emb in response.embeddings:
+            vectors.append(emb.values)
 
     matrix = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -177,17 +177,17 @@ def embed_texts(client: OpenAI, texts: List[str]) -> np.ndarray:
 
 
 def retrieve(
-    client: OpenAI,
+    client: genai.Client,
     query: str,
     chunks: List[Dict[str, Any]],
     matrix: np.ndarray,
     top_k: int = TOP_K,
 ):
-    q_response = client.embeddings.create(
+    q_response = client.models.embed_content(
         model=EMBED_MODEL,
-        input=query,
+        contents=query,
     )
-    q = np.asarray(q_response.data[0].embedding, dtype=np.float32)
+    q = np.asarray(q_response.embeddings[0].values, dtype=np.float32)
     q /= max(float(np.linalg.norm(q)), 1e-12)
 
     scores = matrix @ q
@@ -230,7 +230,7 @@ Rules:
 """.strip()
 
 
-def answer_question(client: OpenAI, question: str, results: List[Dict[str, Any]]) -> str:
+def answer_question(client: genai.Client, question: str, results: List[Dict[str, Any]]) -> str:
     context_parts = []
 
     for i, item in enumerate(results, start=1):
@@ -258,13 +258,16 @@ for the key recommendations. If the excerpts are insufficient, say so rather
 than filling gaps from general medical knowledge.
 """.strip()
 
-    response = client.responses.create(
+    response = client.models.generate_content(
         model=CHAT_MODEL,
-        instructions=SYSTEM_PROMPT,
-        input=user_prompt,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.2,
+        ),
     )
 
-    return response.output_text.strip()
+    return response.text.strip()
 
 
 # -----------------------------
@@ -298,7 +301,7 @@ with st.sidebar:
     st.header("2. Model")
     st.write(f"**Answer model:** `{CHAT_MODEL}`")
     st.write(f"**Embedding model:** `{EMBED_MODEL}`")
-    st.caption("You can override model names with OPENAI_CHAT_MODEL and OPENAI_EMBED_MODEL.")
+    st.caption("You can override model names with GEMINI_CHAT_MODEL and GEMINI_EMBED_MODEL.")
 
     st.divider()
     st.warning(
@@ -311,12 +314,12 @@ api_key = get_api_key()
 
 if not api_key:
     st.error(
-        "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit Secrets "
+        "Gemini API key not found. Add GEMINI_API_KEY (or GOOGLE_API_KEY) to Streamlit Secrets "
         "or set it as an environment variable."
     )
     st.stop()
 
-client = get_openai_client(api_key)
+client = get_gemini_client(api_key)
 
 if uploads:
     current_hash = hashlib.sha256(
